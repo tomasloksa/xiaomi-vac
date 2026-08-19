@@ -322,16 +322,28 @@ def vector_map(
     if md.goto is not None:
         out["goto"] = {"x": md.goto.x * scale, "y": md.goto.y * scale}
 
-    out["rooms"] = [
-        {
-            "id": rid,
-            "name": r.name,
-            "cx": r.pos_x * scale,
-            "cy": r.pos_y * scale,
-            "bbox": [r.x0 * scale, r.y0 * scale, r.x1 * scale, r.y1 * scale],
-        }
-        for rid, r in (md.rooms or {}).items()
-    ]
+    # `xiaomi_grid` derives its own rooms from the labelled grid: correct ids
+    # (see map.py's `_usable_room_ids`) and a true per-room extent. Keep those
+    # when present; `md.rooms` is the fallback for every other brand.
+    if "rooms" not in out:
+        def sc(v: Any) -> Any:
+            """Scale a coordinate, passing None through: `pos_x`/`pos_y` stay
+            None whenever the parser found no label for a room, and
+            multiplying that raises TypeError — which map.py catches as
+            "parser rejected map frame", losing the whole map for one absent
+            room name."""
+            return None if v is None else v * scale
+
+        out["rooms"] = [
+            {
+                "id": rid,
+                "name": r.name,
+                "cx": sc(r.pos_x),
+                "cy": sc(r.pos_y),
+                "bbox": [sc(r.x0), sc(r.y0), sc(r.x1), sc(r.y1)],
+            }
+            for rid, r in (md.rooms or {}).items()
+        ]
     out["walls"] = [[w.x0 * scale, w.y0 * scale, w.x1 * scale, w.y1 * scale] for w in (md.walls or [])]
     out["no_go"] = [[v * scale for v in a.as_list()] for a in (md.no_go_areas or [])]
     out["no_mop"] = [[v * scale for v in a.as_list()] for a in (md.no_mopping_areas or [])]

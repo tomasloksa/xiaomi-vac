@@ -172,3 +172,116 @@ def test_vector_map_xiaomi_grid_merged_into_output():
     out = map_vector.vector_map(_fake_md_with_path(), b"", ijai_grid=False, xiaomi_grid=xg)
     assert out["grid_rle"] == [0, 4]
     assert out["legend"]["room_min"] == 1
+
+
+# --- room ids: grid_id vs room_id ------------------------------------------
+# `map_room_info` maps grid_id -> room_id, and the grid cell value, `rooms[].id`
+# and the `clean_segment` argument are all the same number. Hardware-confirmed
+# on xiaomi.vacuum.ov21gl (Robot Vacuum 5 Pro): all 8 rooms report `room_id: 0`,
+# which is the grid's own "outside" marker — remapping through it erased every
+# room cell (grid histogram collapsed to {0: 62500, 127: 1870}) and left the
+# card nothing to paint. On the ov42gl (H50 Pro) the same field holds real ids.
+def _grid_blob(map_room_info, room_attrs=None):
+    """6x4 grid: wall border, room grid_id 3 at cols 1-2, grid_id 4 at cols 3-4."""
+    import base64
+    import zlib
+
+    w, h = 6, 4
+    g = bytearray([1] * (w * h))
+    for row in (1, 2):
+        for col in (1, 2):
+            g[row * w + col] = 3
+        for col in (3, 4):
+            g[row * w + col] = 4
+    return json.dumps({
+        "width": w, "height": h, "resolution": 50, "origin_x": 0, "origin_y": 0,
+        "map_data": base64.b64encode(zlib.compress(bytes(g))).decode(),
+        "map_room_info": map_room_info,
+        "room_attrs": room_attrs if room_attrs is not None else [
+            {"id": 3, "room_name": "Bath", "name_pos_x": 100, "name_pos_y": 100},
+            {"id": 4, "room_name": "", "name_pos_x": 200, "name_pos_y": 100},
+        ],
+    })
+
+
+def _rle_hist(rle):
+    h = {}
+    for i in range(0, len(rle), 2):
+        h[rle[i]] = h.get(rle[i], 0) + rle[i + 1]
+    return h
+
+
+def test_usable_room_ids_rejects_zero_and_duplicates():
+    assert MapFetcher._usable_room_ids({3: 11, 4: 12}) is True
+    assert MapFetcher._usable_room_ids({3: 0, 4: 0}) is False      # ov21gl
+    assert MapFetcher._usable_room_ids({3: 0, 4: 12}) is False     # 0 == "outside"
+    assert MapFetcher._usable_room_ids({3: 5, 4: 5}) is False      # two rooms, one label
+    assert MapFetcher._usable_room_ids({}) is False
+
+
+def test_parse_xiaomi_grid_keeps_rooms_when_room_id_is_zero():
+    """An all-zero room_id table is ignored: the grid_id stays the room id, so
+    the cells survive normalisation and every room is still selectable."""
+    out = MapFetcher._parse_xiaomi_grid(_grid_blob([
+        {"grid_id": 3, "room_id": 0}, {"grid_id": 4, "room_id": 0},
+    ]))
+    hist = _rle_hist(out["grid_rle"])
+    assert hist.get(3) == 4 and hist.get(4) == 4   # not erased to 0
+    assert [r["id"] for r in out["rooms"]] == [3, 4]
+    lg = out["legend"]
+    assert all(lg["room_min"] <= r["id"] <= lg["room_max"] for r in out["rooms"])
+
+
+def test_parse_xiaomi_grid_honours_usable_room_ids():
+    """When room_id really identifies rooms it wins, and the grid labels follow
+    it so cell value and `rooms[].id` still agree."""
+    out = MapFetcher._parse_xiaomi_grid(_grid_blob([
+        {"grid_id": 3, "room_id": 11}, {"grid_id": 4, "room_id": 12},
+    ]))
+    hist = _rle_hist(out["grid_rle"])
+    assert hist.get(11) == 4 and hist.get(12) == 4
+    assert 3 not in hist and 4 not in hist
+    assert [r["id"] for r in out["rooms"]] == [11, 12]
+
+
+def test_parse_xiaomi_grid_rooms_carry_extent_and_labels():
+    """bbox is the room's true cell extent (in metres); name/anchor come from
+    `room_attrs`, matched on the same id the grid uses. An empty room_name is
+    reported as None so the card falls back to "Room N"."""
+    out = MapFetcher._parse_xiaomi_grid(_grid_blob([
+        {"grid_id": 3, "room_id": 0}, {"grid_id": 4, "room_id": 0},
+    ]))
+    bath, unnamed = out["rooms"]
+    assert bath["name"] == "Bath" and unnamed["name"] is None
+    assert (bath["cx"], bath["cy"]) == (0.1, 0.1)
+    # cols 1-2, rows 1-2 at 50mm/cell from origin 0 -> 0.05..0.15 m, far edge inclusive
+    assert bath["bbox"] == [0.05, 0.05, 0.15, 0.15]
+    assert unnamed["bbox"] == [0.15, 0.05, 0.25, 0.15]
+
+
+def test_vector_map_keeps_xiaomi_grid_rooms():
+    """`md.rooms` collapses to one entry when the parser keys it by a shared
+    room_id, so the grid-derived list wins whenever it is present."""
+    xg = MapFetcher._parse_xiaomi_grid(_grid_blob([
+        {"grid_id": 3, "room_id": 0}, {"grid_id": 4, "room_id": 0},
+    ]))
+    out = map_vector.vector_map(
+        _fake_md_with_path(), b"", ijai_grid=False, scale=0.001, xiaomi_grid=xg,
+    )
+    assert [r["id"] for r in out["rooms"]] == [3, 4]
+
+
+def test_vector_map_tolerates_room_without_label_position():
+    """`pos_x`/`pos_y` stay None when the parser found no label for a room;
+    scaling that must not raise (map.py would swallow it as "parser rejected
+    map frame" and drop the whole map)."""
+    room = SimpleNamespace(name=None, pos_x=None, pos_y=None,
+                           x0=1.0, y0=2.0, x1=3.0, y1=4.0)
+    md = SimpleNamespace(
+        path=None, charger=None, vacuum_position=None, goto=None, rooms={5: room},
+        walls=[], no_go_areas=[], no_mopping_areas=[], zones=[],
+        vacuum_room=None, vacuum_room_name=None,
+    )
+    out = map_vector.vector_map(md, b"", ijai_grid=False, scale=0.001)
+    assert out["rooms"][0]["cx"] is None
+    assert out["rooms"][0]["bbox"] == [0.001, 0.002, 0.003, 0.004]
