@@ -175,12 +175,10 @@ def test_vector_map_xiaomi_grid_merged_into_output():
 
 
 # --- room ids: grid_id vs room_id ------------------------------------------
-# `map_room_info` maps grid_id -> room_id, and the grid cell value, `rooms[].id`
-# and the `clean_segment` argument are all the same number. Hardware-confirmed
-# on xiaomi.vacuum.ov21gl (Robot Vacuum 5 Pro): all 8 rooms report `room_id: 0`,
-# which is the grid's own "outside" marker — remapping through it erased every
-# room cell (grid histogram collapsed to {0: 62500, 127: 1870}) and left the
-# card nothing to paint. On the ov42gl (H50 Pro) the same field holds real ids.
+# The grid cell value, `rooms[].id` and the `clean_segment` argument are all the
+# same number. Hardware-confirmed on ov21gl: all 8 rooms report `room_id: 0` —
+# the grid's own "outside" marker — so remapping through it erased every room
+# cell. ov42gl reports real ids, so both layouts have to work.
 def _grid_blob(map_room_info, room_attrs=None):
     """6x4 grid: wall border, room grid_id 3 at cols 1-2, grid_id 4 at cols 3-4."""
     import base64
@@ -220,8 +218,8 @@ def test_usable_room_ids_rejects_zero_and_duplicates():
 
 
 def test_parse_xiaomi_grid_keeps_rooms_when_room_id_is_zero():
-    """An all-zero room_id table is ignored: the grid_id stays the room id, so
-    the cells survive normalisation and every room is still selectable."""
+    """An all-zero room_id table is ignored: grid_id stays the room id, so the
+    cells survive normalisation and every room stays selectable."""
     out = MapFetcher._parse_xiaomi_grid(_grid_blob([
         {"grid_id": 3, "room_id": 0}, {"grid_id": 4, "room_id": 0},
     ]))
@@ -233,8 +231,8 @@ def test_parse_xiaomi_grid_keeps_rooms_when_room_id_is_zero():
 
 
 def test_parse_xiaomi_grid_honours_usable_room_ids():
-    """When room_id really identifies rooms it wins, and the grid labels follow
-    it so cell value and `rooms[].id` still agree."""
+    """When room_id identifies rooms it wins, and the grid labels follow so
+    cell value and `rooms[].id` still agree."""
     out = MapFetcher._parse_xiaomi_grid(_grid_blob([
         {"grid_id": 3, "room_id": 11}, {"grid_id": 4, "room_id": 12},
     ]))
@@ -245,9 +243,9 @@ def test_parse_xiaomi_grid_honours_usable_room_ids():
 
 
 def test_parse_xiaomi_grid_rooms_carry_extent_and_labels():
-    """bbox is the room's true cell extent (in metres); name/anchor come from
-    `room_attrs`, matched on the same id the grid uses. An empty room_name is
-    reported as None so the card falls back to "Room N"."""
+    """bbox is the room's cell extent in metres; name/anchor come from
+    `room_attrs`, matched on the id the grid uses. An empty room_name becomes
+    None so the card falls back to "Room N"."""
     out = MapFetcher._parse_xiaomi_grid(_grid_blob([
         {"grid_id": 3, "room_id": 0}, {"grid_id": 4, "room_id": 0},
     ]))
@@ -260,8 +258,8 @@ def test_parse_xiaomi_grid_rooms_carry_extent_and_labels():
 
 
 def test_vector_map_keeps_xiaomi_grid_rooms():
-    """`md.rooms` collapses to one entry when the parser keys it by a shared
-    room_id, so the grid-derived list wins whenever it is present."""
+    """`md.rooms` collapses to one entry under a shared room_id, so the
+    grid-derived list wins whenever it is present."""
     xg = MapFetcher._parse_xiaomi_grid(_grid_blob([
         {"grid_id": 3, "room_id": 0}, {"grid_id": 4, "room_id": 0},
     ]))
@@ -272,9 +270,9 @@ def test_vector_map_keeps_xiaomi_grid_rooms():
 
 
 def test_vector_map_tolerates_room_without_label_position():
-    """`pos_x`/`pos_y` stay None when the parser found no label for a room;
-    scaling that must not raise (map.py would swallow it as "parser rejected
-    map frame" and drop the whole map)."""
+    """`pos_x`/`pos_y` are None when a room has no label; scaling that must not
+    raise (map.py swallows it as "parser rejected map frame", dropping the
+    whole map)."""
     room = SimpleNamespace(name=None, pos_x=None, pos_y=None,
                            x0=1.0, y0=2.0, x1=3.0, y1=4.0)
     md = SimpleNamespace(

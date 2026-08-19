@@ -340,25 +340,13 @@ class MapFetcher:
     def _usable_room_ids(grid_to_room: dict[int, int]) -> bool:
         """Can `map_room_info`'s `room_id` serve as the published room id?
 
-        Only when it actually IDENTIFIES a room. Two ways it fails, both fatal
-        for the card because the grid cell value, `rooms[].id` and the
-        `clean_segment` argument are all the same number:
-
-        * `room_id: 0` — 0 is the grid's own "outside/unmapped" marker, so a
-          room labelled 0 is erased from the raster rather than drawn.
-        * duplicate `room_id`s — two rooms sharing a label become one region
-          the user cannot select separately.
-
-        Hardware-confirmed on xiaomi.vacuum.ov21gl (Robot Vacuum 5 Pro): all 8
-        rooms report `room_id: 0` with `grid_id` 3-10, which collapsed the
-        normalised grid to `{0: 62500, 127: 1870}` — every room cell gone —
-        and (via the same field in `vacuum_map_parser_xiaomi`) collapsed
-        `md.rooms` to a single entry `{"id": 0, "name": ""}` carrying one
-        room's bbox and a different room's label position. On the reporter's
-        H50 Pro (ov42gl) the same field holds real distinct ids, so both
-        layouts have to work: trust `room_id` when it is injective and
-        0-free, otherwise use `grid_id`, which the cells already carry and
-        `room_attrs[].id` also uses.
+        Only when it identifies a room. `room_id: 0` collides with the grid's
+        own "outside" marker (so those cells get erased), and duplicates merge
+        two rooms into one unselectable region. Hardware-confirmed on ov21gl:
+        all 8 rooms report `room_id: 0` with `grid_id` 3-10, collapsing the
+        grid to `{0: 62500, 127: 1870}`; ov42gl reports real distinct ids. So
+        trust it when injective and 0-free, else use `grid_id` — which the
+        cells already carry and `room_attrs[].id` also uses.
         """
         if not grid_to_room:
             return False
@@ -388,17 +376,14 @@ class MapFetcher:
         room_id) table the parser uses for `md.rooms`' dict keys, so a
         cell's final value matches `rooms[].id` in the vector payload
         exactly — required for the card's tap-to-select highlight
-        (`this._sel.has(lab)`) and its room-tint lookup to line up — but ONLY
-        when that table actually identifies rooms; see `_usable_room_ids`.
-        Falls back to the bare grid_id otherwise, and when a grid_id has no
-        entry at all (as the community parser's `grid_to_room.get(x, x)` does).
+        (`this._sel.has(lab)`) and its room-tint lookup to line up — but only
+        when that table identifies rooms (see `_usable_room_ids`). Falls back
+        to the bare grid_id otherwise, and when a grid_id has no entry at all.
 
         Also returns `rooms`: one entry per room FOUND IN THE GRID, with its
-        true cell extent as `bbox` plus the name/label anchor from
-        `room_attrs`. `md.rooms` cannot be used for this on every model in
-        the family — `vacuum_map_parser_xiaomi` keys it by `room_id`, so on a
-        device that reports one shared `room_id` all rooms collapse into a
-        single entry (see `_usable_room_ids`).
+        cell extent as `bbox` plus the name/label anchor from `room_attrs`.
+        `md.rooms` can't serve that: `vacuum_map_parser_xiaomi` keys it by
+        `room_id`, so a shared `room_id` collapses every room into one entry.
 
         Row order: verified against `XiaomiImageParser.parse()`'s own y-flip
         (`y = trimmed_height - 1 - img_y`, reading `map_data[img_y*width+x]`
@@ -435,8 +420,8 @@ class MapFetcher:
             grid_to_room = {}  # grid_id is the id; see _usable_room_ids
 
         normalized = bytearray(w * h)
-        # Cell extent per room, keyed by the RAW grid_id so `room_attrs` (which
-        # keys by grid_id on this hardware) can still be matched afterwards.
+        # Keyed by the RAW grid_id, so `room_attrs` (which keys by grid_id on
+        # this hardware) can still be matched afterwards.
         extent: dict[int, list[int]] = {}
         for i in range(w * h):
             v = raw[i]
@@ -470,7 +455,7 @@ class MapFetcher:
                 continue
 
         def label_coord(a: dict, axis: str) -> float | None:
-            """Room label anchor in metres; `text_*` on some firmwares,
+            """Label anchor in metres; `text_*` on some firmwares,
             `name_pos_*` on others. None when the room has no label."""
             for key in (f"text_{axis}", f"name_pos_{axis}"):
                 v = a.get(key)
@@ -485,15 +470,15 @@ class MapFetcher:
         for gid in sorted(extent):
             c0, r0, c1, r1 = extent[gid]
             rid = grid_to_room.get(gid, gid) & 0xFF
-            # `room_attrs` keys by grid_id on ov21gl; try the published id too
-            # for firmwares that key by room_id instead.
+            # grid_id on ov21gl; try the published id too for firmwares
+            # that key by room_id instead.
             a = attrs.get(gid) or attrs.get(rid) or {}
             rooms.append({
                 "id": rid,
                 "name": a.get("room_name") or a.get("name") or None,
                 "cx": label_coord(a, "x"),
                 "cy": label_coord(a, "y"),
-                # +1 on the far side: the bbox spans the whole of the last cell
+                # +1 on the far side: bbox spans the whole of the last cell
                 "bbox": [
                     (origin_x_mm + c0 * res_mm) * 0.001,
                     (origin_y_mm + r0 * res_mm) * 0.001,

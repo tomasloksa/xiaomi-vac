@@ -323,15 +323,14 @@ def vector_map(
         out["goto"] = {"x": md.goto.x * scale, "y": md.goto.y * scale}
 
     # `xiaomi_grid` derives its own rooms from the labelled grid: correct ids
-    # (see map.py's `_usable_room_ids`) and a true per-room extent. Keep those
-    # when present; `md.rooms` is the fallback for every other brand.
+    # (see map.py's `_usable_room_ids`) and a real per-room extent. Keep those;
+    # `md.rooms` is the fallback for every other brand.
     if "rooms" not in out:
         def sc(v: Any) -> Any:
-            """Scale a coordinate, passing None through: `pos_x`/`pos_y` stay
-            None whenever the parser found no label for a room, and
-            multiplying that raises TypeError — which map.py catches as
-            "parser rejected map frame", losing the whole map for one absent
-            room name."""
+            """Scale a coordinate, passing None through: `pos_x`/`pos_y` are
+            None when a room has no label, and multiplying that raises
+            TypeError — which map.py catches as "parser rejected map frame",
+            losing the whole map over one unnamed room."""
             return None if v is None else v * scale
 
         out["rooms"] = [
