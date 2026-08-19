@@ -283,3 +283,52 @@ def test_vector_map_tolerates_room_without_label_position():
     out = map_vector.vector_map(md, b"", ijai_grid=False, scale=0.001)
     assert out["rooms"][0]["cx"] is None
     assert out["rooms"][0]["bbox"] == [0.001, 0.002, 0.003, 0.004]
+
+
+# --- room_chains: tap targets that follow the real room shape ---------------
+def _l_shaped_blob():
+    """8x6 grid. Room 3 is L-shaped; room 4 sits in the notch of that L, so
+    room 3's bounding RECTANGLE completely contains room 4 — the overlap that
+    made bbox tap targets pick the wrong room."""
+    import base64
+    import zlib
+
+    w, h = 8, 6
+    g = bytearray([1] * (w * h))
+    for row in range(1, 5):          # room 3: full-height left column ...
+        for col in range(1, 3):
+            g[row * w + col] = 3
+    for col in range(3, 7):          # ... plus a foot along the bottom row
+        g[1 * w + col] = 3
+    for row in range(2, 5):          # room 4: tucked into the notch above
+        for col in range(3, 7):
+            g[row * w + col] = 4
+    return json.dumps({
+        "width": w, "height": h, "resolution": 50, "origin_x": 0, "origin_y": 0,
+        "map_data": base64.b64encode(zlib.compress(bytes(g))).decode(),
+        "map_room_info": [{"grid_id": 3, "room_id": 0}, {"grid_id": 4, "room_id": 0}],
+        "room_attrs": [],
+    })
+
+
+def test_parse_xiaomi_grid_traces_room_chains():
+    """One chain per room, ids matching `rooms[].id` — the card prefers these
+    over bbox rectangles for its fills and tap targets."""
+    out = MapFetcher._parse_xiaomi_grid(_l_shaped_blob())
+    assert [c["id"] for c in out["room_chains"]] == [3, 4]
+    assert [r["id"] for r in out["rooms"]] == [3, 4]
+
+
+def test_room_chain_follows_shape_where_bbox_overlaps():
+    """The L-shaped room's bbox swallows its neighbour, so rectangles cannot
+    tell the two apart; its traced outline has the L's 6 corners, not 4."""
+    out = MapFetcher._parse_xiaomi_grid(_l_shaped_blob())
+    by_id = {r["id"]: r for r in out["rooms"]}
+    l_box, inner_box = by_id[3]["bbox"], by_id[4]["bbox"]
+    # room 3's rectangle fully contains room 4's
+    assert l_box[0] <= inner_box[0] and l_box[1] <= inner_box[1]
+    assert l_box[2] >= inner_box[2] and l_box[3] >= inner_box[3]
+
+    rings = {c["id"]: c["rings"] for c in out["room_chains"]}
+    assert len(rings[3]) == 1 and len(rings[3][0]) == 6   # L, not a rectangle
+    assert len(rings[4]) == 1 and len(rings[4][0]) == 4   # this one really is

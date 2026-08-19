@@ -43,12 +43,20 @@ ROOM_MIN, ROOM_MAX = 10, 59
 SELECTED_OFFSET = 50  # selected-room cell value = base id + 50 (60-109)
 
 
-def _label_of(v: int) -> int | None:
-    """Map a cell value to its base room id, or None if it isn't a room."""
-    if ROOM_MIN <= v <= ROOM_MAX:
+def _label_of(v: int, room_min: int = ROOM_MIN, room_max: int = ROOM_MAX,
+              selected_offset: int | None = SELECTED_OFFSET) -> int | None:
+    """Map a cell value to its base room id, or None if it isn't a room.
+
+    The window is a parameter because it is per-format: ijai labels rooms 10-59
+    and adds `selected_offset` while one is selected; the xiaomi JSON grid uses
+    its own ids with no selected state (`selected_offset=None`).
+    """
+    if room_min <= v <= room_max:
         return v
-    if ROOM_MAX + SELECTED_OFFSET >= v >= ROOM_MIN + SELECTED_OFFSET:
-        return v - SELECTED_OFFSET
+    if selected_offset is not None and (
+        room_max + selected_offset >= v >= room_min + selected_offset
+    ):
+        return v - selected_offset
     return None
 
 
@@ -142,7 +150,9 @@ def _signed_area(loop: list[list[int]]) -> float:
     return s
 
 
-def trace_room_chains(grid: bytes, w: int, h: int) -> list[dict[str, Any]]:
+def trace_room_chains(grid: bytes, w: int, h: int, *, room_min: int = ROOM_MIN,
+                      room_max: int = ROOM_MAX,
+                      selected_offset: int | None = SELECTED_OFFSET) -> list[dict[str, Any]]:
     """Trace exact room outlines from the labelled grid (row-major, w*h cells).
 
     Follows what proven renderers (Valetudo) do: each room is a SOLID area,
@@ -155,7 +165,7 @@ def trace_room_chains(grid: bytes, w: int, h: int) -> list[dict[str, Any]]:
     for r in range(h):
         base = r * w
         for c in range(w):
-            lab = _label_of(grid[base + c])
+            lab = _label_of(grid[base + c], room_min, room_max, selected_offset)
             if lab is not None:
                 masks.setdefault(lab, set()).add((c, r))
     chains: list[dict[str, Any]] = []

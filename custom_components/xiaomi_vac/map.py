@@ -37,6 +37,17 @@ _DREAME_ENCKEY_PIID = 3
 
 _LOGGER = logging.getLogger(__name__)
 
+# Cell semantics of the normalised xiaomi-JSON grid (see `_parse_xiaomi_grid`).
+# One dict so the room window the tracer walks and the one the card reads from
+# `legend` cannot drift apart.
+_XIAOMI_LEGEND = {
+    "outside": 0, "floor": 127, "new_area": 127, "wall": 128,
+    "room_min": 1, "room_max": 126,
+    # no "selected room" cell value in this format: an empty range (min > max)
+    # tells the card there is nothing to match
+    "selected_room_min": 1000, "selected_room_max": 999,
+}
+
 
 def _patch_parse_rooms() -> None:
     """Work around an upstream crash on NON-ACTIVE maps (multi-map).
@@ -489,6 +500,19 @@ class MapFetcher:
 
         return {
             "rooms": rooms,
+            # Traced cell outlines, so the card's tap targets follow the real
+            # room shape. Its bbox fallback is a RECTANGLE per room; rooms
+            # aren't rectangular, so those overlap and — last drawn wins in SVG
+            # — the highest id swallowed its neighbours' taps (confirmed on
+            # ov21gl: tapping Kitchen (7) cleaned Bedroom (8), Office (5)
+            # cleaned Living room (6), while sending 6 directly cleaned the
+            # Living room, proving the ids themselves were right).
+            "room_chains": map_vector.trace_room_chains(
+                bytes(normalized), w, h,
+                room_min=_XIAOMI_LEGEND["room_min"],
+                room_max=_XIAOMI_LEGEND["room_max"],
+                selected_offset=None,
+            ),
             "size": {"x": w, "y": h},
             "bounds": {
                 "minX": origin_x_mm * 0.001, "minY": origin_y_mm * 0.001,
@@ -501,11 +525,7 @@ class MapFetcher:
             # well outside ijai's native 10-59/60-109 window — the card
             # reads these bounds from `m.legend` instead of assuming ijai's
             # numbers, so ijai's own rendering is untouched by this.
-            "legend": {
-                "outside": 0, "floor": 127, "new_area": 127, "wall": 128,
-                "room_min": 1, "room_max": 126,
-                "selected_room_min": 1000, "selected_room_max": 999,  # unused/unreachable for this brand
-            },
+            "legend": dict(_XIAOMI_LEGEND),
         }
 
     def _draw_carpets(
