@@ -224,6 +224,20 @@ class IjaiVacuumDevice:
         # map ids sent through it fail at device level (verified on v17
         # hardware, issue #7). Room-ids must stay a CSV string — the device
         # reads an integer as empty ids, which means a full global clean.
+        if _LOGGER.isEnabledFor(logging.DEBUG) and cap.room_ids is not None:
+            # The device's OWN room-id list, straight from the property the
+            # room-clean action reads its argument from. Nothing else reads it,
+            # and it is the only authority on which id means which room —
+            # `room_attrs[].id` and the map grid's ids are both known to differ
+            # from it on some models (ov21gl: selecting the room the map calls
+            # 7 cleans the bedroom, while sending 6 cleans the living room).
+            try:
+                _LOGGER.debug("room-clean: device room_ids prop %s = %r; sending %s",
+                              (cap.room_ids.siid, cap.room_ids.piid),
+                              self._batch_get([cap.room_ids])[cap.room_ids], room_ids)
+            except Exception as ex:  # noqa: BLE001 - diagnostic only
+                _LOGGER.debug("room-clean: could not read room_ids prop: %s", ex)
+
         preferred = self.room_clean_set_params(room_ids)
         if preferred is not None:
             action, params = preferred

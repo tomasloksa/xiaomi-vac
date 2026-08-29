@@ -524,6 +524,13 @@ class MapFetcher:
                         return None
             return None
 
+        if _LOGGER.isEnabledFor(logging.DEBUG):
+            _LOGGER.debug(
+                "xiaomi grid: grid_id -> published id (name): %s",
+                {g: (grid_to_room.get(g, g) & 0xFF,
+                     (by_anchor.get(g) or attrs.get(g) or {}).get("room_name"))
+                 for g in sorted(extent)})
+
         rooms = []
         for gid in sorted(extent):
             c0, r0, c1, r1 = extent[gid]
