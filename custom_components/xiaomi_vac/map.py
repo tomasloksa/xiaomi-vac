@@ -365,6 +365,43 @@ class MapFetcher:
         return 0 not in ids and len(set(ids)) == len(ids)
 
     @staticmethod
+    def _rooms_by_label_anchor(
+        attrs: dict[int, dict], raw: bytes, w: int, h: int,
+        res_mm: float, origin_x_mm: float, origin_y_mm: float,
+    ) -> dict[int, dict]:
+        """Map grid_id -> the `room_attrs` entry whose label sits in that room.
+
+        `name_pos_x`/`name_pos_y` is an absolute coordinate, so the cell it
+        falls in tells us which grid region the entry describes — no assumption
+        about how the two id spaces relate. Needed because `room_attrs[].id` is
+        the DEVICE's room id and is not the grid's id on every model:
+        hardware-confirmed on ov21gl, where the kitchen region is labelled 8
+        while `room_attrs` calls the Kitchen 7, so selecting the kitchen started
+        cleaning the bedroom. `map_room_info` is meant to bridge that, but the
+        same device reports `room_id: 0` for every room.
+
+        Returns {} unless every entry lands in a distinct room cell, so a
+        firmware that parks a label in a hallway or on a wall falls back
+        instead of producing a half-wrong mapping.
+        """
+        out: dict[int, dict] = {}
+        for rid, entry in attrs.items():
+            x = entry.get("text_x", entry.get("name_pos_x"))
+            y = entry.get("text_y", entry.get("name_pos_y"))
+            try:
+                col = int((float(x) - origin_x_mm) / res_mm)
+                row = int((float(y) - origin_y_mm) / res_mm)
+            except (TypeError, ValueError, ZeroDivisionError):
+                return {}
+            if not (0 <= col < w and 0 <= row < h):
+                return {}
+            v = raw[row * w + col]
+            if not 3 <= v <= 63 or v in out:
+                return {}
+            out[v] = entry
+        return out
+
+    @staticmethod
     def _parse_xiaomi_grid(unpacked_json: str) -> dict | None:
         """Extract the raw per-cell occupancy grid from the xiaomi-JSON map
         blob for the Atlas card's pixel-accurate room raster (`_roomRaster`
@@ -427,8 +464,27 @@ class MapFetcher:
                     grid_to_room[int(entry["grid_id"])] = int(entry["room_id"])
                 except (KeyError, TypeError, ValueError):
                     continue
+        attrs: dict[int, dict] = {}
+        for entry in payload.get("room_attrs") or []:
+            if not isinstance(entry, dict):
+                continue
+            try:
+                attrs[int(entry.get("id", entry.get("room_id")))] = entry
+            except (KeyError, TypeError, ValueError):
+                continue
+
+        by_anchor = MapFetcher._rooms_by_label_anchor(
+            attrs, raw, w, h, res_mm, origin_x_mm, origin_y_mm)
         if not MapFetcher._usable_room_ids(grid_to_room):
-            grid_to_room = {}  # grid_id is the id; see _usable_room_ids
+            # No usable table: the label anchors are the only other link between
+            # the grid's ids and the device's. Identity as a last resort.
+            grid_to_room = {g: int(a["id"]) for g, a in by_anchor.items()} or {}
+            if not MapFetcher._usable_room_ids(grid_to_room):
+                grid_to_room = {}
+                _LOGGER.debug(
+                    "xiaomi grid: no usable room-id mapping (map_room_info and "
+                    "label anchors both unusable); falling back to grid ids, so "
+                    "room cleaning may target the wrong room")
 
         normalized = bytearray(w * h)
         # Keyed by the RAW grid_id, so `room_attrs` (which keys by grid_id on
@@ -456,15 +512,6 @@ class MapFetcher:
             else:
                 normalized[i] = 128
 
-        attrs: dict[int, dict] = {}
-        for entry in payload.get("room_attrs") or []:
-            if not isinstance(entry, dict):
-                continue
-            try:
-                attrs[int(entry.get("id", entry.get("room_id")))] = entry
-            except (KeyError, TypeError, ValueError):
-                continue
-
         def label_coord(a: dict, axis: str) -> float | None:
             """Label anchor in metres; `text_*` on some firmwares,
             `name_pos_*` on others. None when the room has no label."""
@@ -481,9 +528,9 @@ class MapFetcher:
         for gid in sorted(extent):
             c0, r0, c1, r1 = extent[gid]
             rid = grid_to_room.get(gid, gid) & 0xFF
-            # grid_id on ov21gl; try the published id too for firmwares
-            # that key by room_id instead.
-            a = attrs.get(gid) or attrs.get(rid) or {}
+            # Geometry first (the anchor is inside exactly one room), then id
+            # equality for firmwares whose `room_attrs` key by grid_id/room_id.
+            a = by_anchor.get(gid) or attrs.get(gid) or attrs.get(rid) or {}
             rooms.append({
                 "id": rid,
                 "name": a.get("room_name") or a.get("name") or None,

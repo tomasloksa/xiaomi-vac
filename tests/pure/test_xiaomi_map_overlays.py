@@ -332,3 +332,60 @@ def test_room_chain_follows_shape_where_bbox_overlaps():
     rings = {c["id"]: c["rings"] for c in out["room_chains"]}
     assert len(rings[3]) == 1 and len(rings[3][0]) == 6   # L, not a rectangle
     assert len(rings[4]) == 1 and len(rings[4][0]) == 4   # this one really is
+
+
+# --- label anchors bridge the grid's ids and the device's -------------------
+def _shifted_id_blob():
+    """The ov21gl case: grid regions are 3 and 4, but `room_attrs` calls those
+    same rooms 7 and 8 (device ids), with `map_room_info` all zeros. The label
+    anchors are the only link: id 7's anchor sits in region 3, id 8's in 4."""
+    import base64
+    import zlib
+
+    w, h = 6, 4
+    g = bytearray([1] * (w * h))
+    for row in (1, 2):
+        for col in (1, 2):
+            g[row * w + col] = 3
+        for col in (3, 4):
+            g[row * w + col] = 4
+    return json.dumps({
+        "width": w, "height": h, "resolution": 50, "origin_x": 0, "origin_y": 0,
+        "map_data": base64.b64encode(zlib.compress(bytes(g))).decode(),
+        "map_room_info": [{"grid_id": 3, "room_id": 0}, {"grid_id": 4, "room_id": 0}],
+        "room_attrs": [
+            {"id": 7, "room_name": "Kitchen", "name_pos_x": 100, "name_pos_y": 100},
+            {"id": 8, "room_name": "Bedroom", "name_pos_x": 200, "name_pos_y": 100},
+        ],
+    })
+
+
+def test_label_anchor_maps_grid_ids_to_device_room_ids():
+    """Selecting a room must send the id the DEVICE knows it by, so the grid is
+    relabelled through the anchors: region 3 becomes 7, region 4 becomes 8."""
+    out = MapFetcher._parse_xiaomi_grid(_shifted_id_blob())
+    assert [r["id"] for r in out["rooms"]] == [7, 8]
+    assert [r["name"] for r in out["rooms"]] == ["Kitchen", "Bedroom"]
+    hist = _rle_hist(out["grid_rle"])
+    assert hist.get(7) == 4 and hist.get(8) == 4      # cells carry the device id
+    assert 3 not in hist and 4 not in hist
+    # ...so the raster, the tap target and clean_segment all agree
+    assert [c["id"] for c in out["room_chains"]] == [7, 8]
+
+
+def test_label_anchor_ignored_when_map_room_info_is_usable():
+    """`map_room_info` stays authoritative where it works (ov42gl), so that
+    hardware-verified path is untouched by the anchor fallback."""
+    blob = json.loads(_shifted_id_blob())
+    blob["map_room_info"] = [{"grid_id": 3, "room_id": 11}, {"grid_id": 4, "room_id": 12}]
+    out = MapFetcher._parse_xiaomi_grid(json.dumps(blob))
+    assert [r["id"] for r in out["rooms"]] == [11, 12]
+
+
+def test_label_anchor_rejected_when_a_label_misses_its_room():
+    """A label parked on a wall (or two labels in one room) makes the mapping
+    unsafe — fall back to grid ids rather than guess half of it."""
+    blob = json.loads(_shifted_id_blob())
+    blob["room_attrs"][1]["name_pos_x"] = 0      # on the wall border, not a room
+    out = MapFetcher._parse_xiaomi_grid(json.dumps(blob))
+    assert [r["id"] for r in out["rooms"]] == [3, 4]
