@@ -136,6 +136,9 @@ class XiaomiVacuum(CoordinatorEntity[XiaomiVacuumCoordinator], StateVacuumEntity
     async def async_clean_segment(self, segments: list[int]) -> None:
         """Clean one or more rooms by their map room id (tap-to-clean)."""
         data = self._entry.data
+        if _LOGGER.isEnabledFor(logging.DEBUG):
+            await self.hass.async_add_executor_job(
+                _log_room_clean_ids, self._device, segments)
         if _has_cloud_session(data):
             # ijai proven, xiaomi inferred, viomi/dreame/roidmi best-effort-unverified — plan v1.2.2
             try:
@@ -158,6 +161,15 @@ class XiaomiVacuum(CoordinatorEntity[XiaomiVacuumCoordinator], StateVacuumEntity
         except Exception as err:  # noqa: BLE001
             raise HomeAssistantError(f"Room cleaning failed: {err}") from err
         await self.coordinator.async_request_refresh()
+
+
+def _log_room_clean_ids(device: IjaiVacuumDevice, segments: list[int]) -> None:
+    """Debug-log what we are about to send next to the device's own room list."""
+    try:
+        ids = device.room_clean_ids_raw()
+    except Exception as ex:  # noqa: BLE001 - diagnostic must never block a clean
+        ids = f"<read failed: {ex}>"
+    _LOGGER.debug("room-clean: sending %s; device room_ids prop = %r", segments, ids)
 
 
 def _has_cloud_session(data: dict) -> bool:
@@ -216,6 +228,8 @@ def _cloud_clean_segments(data: dict, device: IjaiVacuumDevice, segments: list[i
         data.get(CONF_PASS_TOKEN),
     )
     for action, params in attempts:
+        _LOGGER.debug("room-clean via cloud: action siid=%s aiid=%s params=%r",
+                      action.siid, action.aiid, params)
         response = cloud.cloud_action(
             str(data[CONF_SERVER]),
             str(data[CONF_DEVICE_ID]),
